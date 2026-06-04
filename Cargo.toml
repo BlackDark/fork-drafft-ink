@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/drafftink",
+    "crates/drafftink-protocol",
     "crates/drafftink-core",
     "crates/drafftink-render",
     "crates/drafftink-widgets",

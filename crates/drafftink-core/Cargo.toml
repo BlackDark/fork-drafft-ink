@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Core data structures and logic for DrafftInk whiteboard"
 
 [dependencies]
+drafftink-protocol = { path = "../drafftink-protocol", version = "0.1.0" }
 kurbo.workspace = true
 peniko.workspace = true
 serde.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "drafftink-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WebSocket collaboration protocol types for DrafftInk"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

@@ -3,77 +3,10 @@
 //! Provides a platform-agnostic WebSocket client interface for connecting
 //! to the relay server.
 
-use serde::{Deserialize, Serialize};
-
-/// Messages sent to the server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ClientMessage {
-    /// Join a room
-    Join { room: String },
-    /// Leave current room
-    Leave,
-    /// Sync CRDT data (base64 encoded Loro bytes)
-    Sync { data: String },
-    /// Awareness update (cursor position, selection, etc.)
-    Awareness {
-        peer_id: u64,
-        #[serde(flatten)]
-        state: AwarenessState,
-    },
-}
-
-/// Messages received from the server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerMessage {
-    /// Confirm room join with current state
-    Joined {
-        room: String,
-        peer_count: usize,
-        /// Initial sync data (if room has history)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        initial_sync: Option<String>,
-    },
-    /// Peer joined the room
-    PeerJoined { peer_id: String },
-    /// Peer left the room
-    PeerLeft { peer_id: String },
-    /// Sync data from another peer
-    Sync { from: String, data: String },
-    /// Awareness update from another peer
-    Awareness {
-        from: String,
-        peer_id: u64,
-        #[serde(flatten)]
-        state: AwarenessState,
-    },
-    /// Error message
-    Error { message: String },
-}
-
-/// Awareness state for a peer
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AwarenessState {
-    /// Cursor position (if any)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<CursorPosition>,
-    /// User name/color
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<UserInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CursorPosition {
-    pub x: f64,
-    pub y: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub name: String,
-    pub color: String,
-}
+pub use drafftink_protocol::{
+    AwarenessState, ClientMessage, CursorPosition, ServerMessage, UserInfo, base64_decode,
+    base64_encode,
+};
 
 /// Connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,72 +44,8 @@ pub enum SyncEvent {
     },
     /// Error occurred
     Error { message: String },
-}
-
-/// Base64 decoding
-pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    const DECODE_TABLE: [i8; 128] = [
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
-        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
-        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
-        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
-        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-    ];
-
-    let input = input.trim_end_matches('=');
-    let mut result = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buf = 0u32;
-    let mut bits = 0;
-
-    for c in input.bytes() {
-        if c >= 128 {
-            return None;
-        }
-        let val = DECODE_TABLE[c as usize];
-        if val < 0 {
-            return None;
-        }
-        buf = (buf << 6) | (val as u32);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            result.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
-        }
-    }
-
-    Some(result)
-}
-
-/// Base64 encoding
-pub fn base64_encode(data: &[u8]) -> String {
-    const B64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
-
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-
-        result.push(B64_CHARS[(b0 >> 2) as usize] as char);
-        result.push(B64_CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-
-        if chunk.len() > 1 {
-            result.push(B64_CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(B64_CHARS[(b2 & 0x3f) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
+    /// Server sent full room snapshot (recovery)
+    RoomSnapshot { data: Option<Vec<u8>> },
 }
 
 // ============================================================================
@@ -280,6 +149,10 @@ mod wasm_client {
                                 peer_id,
                                 state,
                             },
+                            ServerMessage::RoomSnapshot { data } => {
+                                let bytes = data.and_then(|s| super::base64_decode(&s));
+                                SyncEvent::RoomSnapshot { data: bytes }
+                            }
                             ServerMessage::Error { message } => SyncEvent::Error { message },
                         };
                         events_msg.borrow_mut().push(event);
@@ -541,6 +414,11 @@ mod native_client {
                                                 peer_id,
                                                 state,
                                             },
+                                            ServerMessage::RoomSnapshot { data } => {
+                                                let bytes =
+                                                    data.and_then(|s| super::base64_decode(&s));
+                                                SyncEvent::RoomSnapshot { data: bytes }
+                                            }
                                             ServerMessage::Error { message } => {
                                                 SyncEvent::Error { message }
                                             }
