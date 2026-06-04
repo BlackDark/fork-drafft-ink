@@ -198,6 +198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -479,6 +488,15 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
 ]
 
 [[package]]
@@ -816,7 +834,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1301,6 +1323,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "thiserror 2.0.17",
+ "uuid",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -1315,6 +1338,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "dirs",
+ "drafftink-protocol",
  "js-sys",
  "kurbo 0.12.0",
  "log",
@@ -1339,6 +1363,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drafftink-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "drafftink-render"
 version = "0.1.0"
 dependencies = [
@@ -1359,12 +1392,14 @@ dependencies = [
 name = "drafftink-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
- "bytes",
  "dashmap",
+ "drafftink-protocol",
  "futures-util",
- "serde",
+ "redis",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower-http",
@@ -1819,12 +1854,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dff15bf788c671c1934e366d07e30c1814a8ef514e1af724a602e8a2fbe1b10"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -1832,6 +1883,17 @@ name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e28d1d997f585e54aebc3f97d39e72338912123a67330d723fdbb564d646c9f"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
 
 [[package]]
 name = "futures-intrusive"
@@ -1892,6 +1954,7 @@ version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -2514,6 +2577,15 @@ name = "itertools"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -4132,6 +4204,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "redis"
+version = "0.27.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09d8f99a4090c89cc489a94833c901ead69bfbf3877b4867d5482e321ee875bc"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "backon",
+ "bytes",
+ "combine",
+ "futures",
+ "futures-util",
+ "itertools 0.13.0",
+ "itoa",
+ "num-bigint",
+ "percent-encoding",
+ "pin-project-lite",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4511,6 +4609,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4686,6 +4790,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4979,7 +5093,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.1",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -5017,6 +5131,19 @@ dependencies = [
  "log",
  "tokio",
  "tungstenite 0.28.0",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

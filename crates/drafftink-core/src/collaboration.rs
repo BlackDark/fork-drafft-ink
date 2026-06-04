@@ -3,15 +3,24 @@
 //! This module provides the bridge between local document state and CRDT-based
 //! synchronization for collaborative editing.
 
+use std::collections::HashSet;
+
 use serde_json;
 
 use crate::canvas::CanvasDocument;
+use crate::shapes::ShapeId;
 use crate::crdt::CrdtDocument;
-use crate::shapes::{Shape, ShapeId};
+use crate::shapes::Shape;
 use crate::sync::{
     AwarenessState, ClientMessage, CursorPosition, ServerMessage, SyncEvent, base64_decode,
     base64_encode,
 };
+
+/// Debounce interval for incremental sync (milliseconds).
+pub const SYNC_DEBOUNCE_MS: u64 = 80;
+
+/// Send a full snapshot when incremental payload exceeds this size (bytes).
+const SYNC_SNAPSHOT_THRESHOLD: usize = 64 * 1024;
 
 /// Manages collaboration state and synchronization between local and CRDT documents.
 pub struct CollaborationManager {
@@ -27,6 +36,12 @@ pub struct CollaborationManager {
     awareness: AwarenessState,
     /// Pending outgoing messages (JSON strings).
     outgoing: Vec<String>,
+    /// Version vector after last successful outbound sync.
+    last_sent_vv: loro::VersionVector,
+    /// Document changed since last flush.
+    sync_dirty: bool,
+    /// Timestamp (ms) of last outbound sync flush.
+    last_flush_ms: u64,
 }
 
 impl CollaborationManager {
@@ -41,12 +56,16 @@ impl CollaborationManager {
             current_room: None,
             awareness: AwarenessState::default(),
             outgoing: Vec::new(),
+            last_sent_vv: loro::VersionVector::default(),
+            sync_dirty: false,
+            last_flush_ms: 0,
         }
     }
 
     /// Create from an existing CRDT document (e.g., loaded from storage or network).
     pub fn from_crdt(crdt: CrdtDocument) -> Self {
         let peer_id = crdt.loro_doc().peer_id();
+        let last_sent_vv = crdt.version();
         Self {
             crdt,
             enabled: false,
@@ -54,7 +73,30 @@ impl CollaborationManager {
             current_room: None,
             awareness: AwarenessState::default(),
             outgoing: Vec::new(),
+            last_sent_vv,
+            sync_dirty: false,
+            last_flush_ms: 0,
         }
+    }
+
+    fn now_ms() -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            (web_time::Instant::now().elapsed().as_secs_f64() * 1000.0) as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        }
+    }
+
+    fn reset_sync_tracking(&mut self) {
+        self.last_sent_vv = self.crdt.version();
+        self.sync_dirty = false;
+        self.last_flush_ms = Self::now_ms();
     }
 
     /// Get the peer ID for this client.
@@ -89,24 +131,44 @@ impl CollaborationManager {
 
     // --- Sync Operations ---
 
-    /// Sync local document state to CRDT.
-    /// This should be called after local operations to propagate changes.
+    /// Merge local canvas into CRDT (add/update/remove deltas — no full clear).
     pub fn sync_to_crdt(&mut self, doc: &CanvasDocument) {
         if !self.enabled {
             return;
         }
 
-        // Clear existing CRDT shapes
-        let _ = self.crdt.clear();
-
-        // Set document name
         let _ = self.crdt.set_name(&doc.name);
 
-        // Add all shapes in z-order
+        let doc_ids: HashSet<String> = doc.z_order.iter().map(|id| id.to_string()).collect();
+
+        for id_str in self.crdt.z_order() {
+            if !doc_ids.contains(&id_str) {
+                let _ = self.crdt.remove_shape(&id_str);
+            }
+        }
+
         for shape_id in &doc.z_order {
             if let Some(shape) = doc.shapes.get(shape_id) {
-                let _ = self.crdt.add_shape(shape);
+                let id = shape_id.to_string();
+                if self.crdt.get_shape(&id).is_some() {
+                    let _ = self.crdt.update_shape(shape);
+                } else {
+                    let _ = self.crdt.add_shape(shape);
+                }
             }
+        }
+
+        Self::reconcile_z_order(&mut self.crdt, doc);
+    }
+
+    /// Align CRDT z-order with the canvas (back-to-front `bring_to_front` pass).
+    fn reconcile_z_order(crdt: &mut CrdtDocument, doc: &CanvasDocument) {
+        let target: Vec<String> = doc.z_order.iter().map(|id| id.to_string()).collect();
+        if crdt.z_order() == target {
+            return;
+        }
+        for shape_id in &doc.z_order {
+            let _ = crdt.bring_to_front(&shape_id.to_string());
         }
     }
 
@@ -321,15 +383,76 @@ impl CollaborationManager {
 
     // --- Sync Broadcast ---
 
-    /// Queue a sync broadcast with current CRDT state.
-    pub fn broadcast_sync(&mut self) {
+    /// Mark document as needing sync (debounced flush).
+    pub fn mark_sync_dirty(&mut self) {
         if self.current_room.is_some() && self.enabled {
-            let snapshot = self.crdt.export_snapshot();
-            let data = base64_encode(&snapshot);
+            self.sync_dirty = true;
+        }
+    }
+
+    /// Queue a full snapshot (e.g. right after joining a room).
+    pub fn broadcast_sync_snapshot(&mut self) {
+        if self.current_room.is_some() && self.enabled {
+            self.queue_snapshot();
+            self.reset_sync_tracking();
+        }
+    }
+
+    /// Legacy entry: mark dirty; call [`flush_sync`] from the frame loop.
+    pub fn broadcast_sync(&mut self) {
+        self.mark_sync_dirty();
+    }
+
+    /// Flush pending incremental or snapshot sync if debounce elapsed or `force`.
+    pub fn flush_sync(&mut self, force: bool) {
+        if self.current_room.is_none() || !self.enabled {
+            return;
+        }
+        if !self.sync_dirty && !force {
+            return;
+        }
+        let now = Self::now_ms();
+        if !force && now.saturating_sub(self.last_flush_ms) < SYNC_DEBOUNCE_MS {
+            return;
+        }
+
+        let updates = self.crdt.export_updates(&self.last_sent_vv);
+        if updates.is_empty() && !force {
+            self.sync_dirty = false;
+            return;
+        }
+
+        if force || updates.len() >= SYNC_SNAPSHOT_THRESHOLD {
+            self.queue_snapshot();
+        } else {
+            let data = base64_encode(&updates);
             let msg = ClientMessage::Sync { data };
             if let Ok(json) = serde_json::to_string(&msg) {
                 self.outgoing.push(json);
             }
+        }
+
+        self.last_sent_vv = self.crdt.version();
+        self.sync_dirty = false;
+        self.last_flush_ms = now;
+    }
+
+    /// Request a full room snapshot from the server (recovery).
+    pub fn request_room_snapshot(&mut self) {
+        if self.current_room.is_some() {
+            let msg = ClientMessage::RequestSnapshot;
+            if let Ok(json) = serde_json::to_string(&msg) {
+                self.outgoing.push(json);
+            }
+        }
+    }
+
+    fn queue_snapshot(&mut self) {
+        let snapshot = self.crdt.export_snapshot();
+        let data = base64_encode(&snapshot);
+        let msg = ClientMessage::SyncSnapshot { data };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            self.outgoing.push(json);
         }
     }
 
@@ -353,12 +476,17 @@ impl CollaborationManager {
                 let initial_data = initial_sync.and_then(|s| {
                     base64_decode(&s).and_then(|bytes| {
                         if self.crdt.import(&bytes).is_ok() {
+                            self.reset_sync_tracking();
                             Some(bytes)
                         } else {
                             None
                         }
                     })
                 });
+
+                if initial_data.is_none() {
+                    self.reset_sync_tracking();
+                }
 
                 Some(SyncEvent::JoinedRoom {
                     room,
@@ -386,6 +514,15 @@ impl CollaborationManager {
                 peer_id,
                 state,
             }),
+            ServerMessage::RoomSnapshot { data } => {
+                let bytes = data.and_then(|s| base64_decode(&s));
+                if let Some(ref b) = bytes {
+                    if self.crdt.import(b).is_ok() {
+                        self.reset_sync_tracking();
+                    }
+                }
+                Some(SyncEvent::RoomSnapshot { data: bytes })
+            }
             ServerMessage::Error { message } => Some(SyncEvent::Error { message }),
         }
     }
@@ -477,6 +614,55 @@ mod tests {
         // Both local and CRDT should have the shape
         assert_eq!(doc.shapes.len(), 1);
         assert_eq!(manager.crdt().shape_count(), 1);
+    }
+
+    #[test]
+    fn test_sync_to_crdt_incremental_add() {
+        let mut manager = CollaborationManager::new();
+        manager.enable();
+
+        let rect = Rectangle::new(Point::new(0.0, 0.0), 10.0, 10.0);
+        let shape1 = Shape::Rectangle(rect);
+        manager.crdt_mut().add_shape(&shape1).unwrap();
+
+        let mut doc = CanvasDocument::new();
+        doc.add_shape(shape1.clone());
+        let rect2 = Rectangle::new(Point::new(50.0, 0.0), 20.0, 20.0);
+        doc.add_shape(Shape::Rectangle(rect2));
+
+        manager.sync_to_crdt(&doc);
+        assert_eq!(manager.crdt().shape_count(), 2);
+        assert!(manager
+            .crdt()
+            .get_shape(&shape1.id().to_string())
+            .is_some());
+    }
+
+    #[test]
+    fn test_incremental_sync_smaller_than_snapshot() {
+        let mut m1 = CollaborationManager::new();
+        m1.enable();
+        m1.set_room(Some("r".to_string()));
+        let rect = Rectangle::new(Point::new(0.0, 0.0), 10.0, 10.0);
+        m1.crdt_mut()
+            .add_shape(&Shape::Rectangle(rect))
+            .unwrap();
+        m1.flush_sync(true);
+        m1.take_outgoing();
+
+        let rect2 = Rectangle::new(Point::new(20.0, 0.0), 10.0, 10.0);
+        m1.crdt_mut()
+            .add_shape(&Shape::Rectangle(rect2))
+            .unwrap();
+        m1.mark_sync_dirty();
+        m1.last_flush_ms = 0;
+        m1.flush_sync(false);
+        let outgoing = m1.take_outgoing();
+        assert!(!outgoing.is_empty());
+        let has_incremental = outgoing
+            .iter()
+            .any(|j| j.contains("\"sync\"") && !j.contains("sync_snapshot"));
+        assert!(has_incremental);
     }
 
     #[test]
