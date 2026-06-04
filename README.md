@@ -31,11 +31,23 @@ Cross-platform (Linux, Windows, macOS, browser, mobile). Real-time collaboration
 
 ## Installation
 
+### Toolchain (recommended)
+
+Uses [mise](https://mise.jdx.dev) so Rust, `wasm-pack`, and the WASM target stay out of your global install:
+
+```bash
+mise trust
+mise install
+```
+
+Pinned in [`mise.toml`](mise.toml) and [`rust-toolchain.toml`](rust-toolchain.toml) (matches CI: Rust 1.91.1, `rustfmt`, `clippy`, `wasm32-unknown-unknown`).
+
 ### Desktop
 
 ```bash
 git clone https://github.com/PatWie/drafft-ink.git
 cd drafft-ink
+mise install   # if using mise
 cargo run --release
 ```
 
@@ -48,6 +60,7 @@ Or use the build script:
 ### Web (Local)
 
 ```bash
+mise install   # wasm-pack + wasm target
 ./build.sh --wasm
 ```
 
@@ -58,7 +71,35 @@ cargo build --release -p drafftink-server
 ./target/release/drafftink-server
 ```
 
-Listens on `ws://localhost:3030/ws`. One binary, no configuration files. Self-host it. Or don't. We're not your manager.
+Listens on `ws://localhost:3030/ws` by default.
+
+**Persistence (Kubernetes / self-host)**
+
+| `STORE` | Env | Use |
+|---------|-----|-----|
+| `memory` | (default) | Dev only; rooms lost on restart |
+| `file` | `PERSISTENCE_DIR=/data/rooms` | Single relay replica + PVC |
+| `redis` | `REDIS_URL=redis://host:6379` | Multi-replica; requires `cargo build -p drafftink-server --features redis` |
+
+Other env: `PORT`, `HOST`, `ROOM_TTL_SECS`, `MAX_ROOM_BYTES`.
+
+Example file-backed server:
+
+```bash
+STORE=file PERSISTENCE_DIR=./data/rooms ./target/release/drafftink-server
+```
+
+**WASM deploy config** (build-time):
+
+```bash
+DRAFFTINK_DEFAULT_WS=/ws DRAFFTINK_HIDE_SERVER_URL=true ./build.sh --wasm
+```
+
+Or runtime override in `web/index.html` via `window.__DRAFFTINK_COLLAB__`.
+
+**Kubernetes:** see [deploy/k8s/](deploy/k8s/) (single-replica PVC + optional Redis for scale).
+
+Share links use `?room=<id>` (and `&server=` when the relay is on another host). Use **Start shared room** in the collab UI to generate a room id and update the browser URL.
 
 ---
 

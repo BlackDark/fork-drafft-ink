@@ -80,7 +80,9 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test -p drafftink-server --test ws_integration
 
   build-native:
     name: Build Native

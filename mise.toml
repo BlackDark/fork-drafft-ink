@@ -1,0 +1,15 @@
+# Tool versions for local development (https://mise.jdx.dev)
+# Run: mise trust && mise install
+
+min_version = "2024.11.1"
+
+[tools]
+rust = "1.91.1"
+"cargo:wasm-pack" = "0.13.1"
+python = "3.12"
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+
+[env]
+_.path = ["{env:CARGO_HOME}/bin"]

@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: drafftink-relay-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drafftink-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drafftink-relay
+  template:
+    metadata:
+      labels:
+        app: drafftink-relay
+    spec:
+      containers:
+        - name: relay
+          image: drafftink-server:latest
+          ports:
+            - containerPort: 3030
+          env:
+            - name: STORE
+              value: file
+            - name: PERSISTENCE_DIR
+              value: /data/rooms
+            - name: PORT
+              value: "3030"
+          volumeMounts:
+            - name: data
+              mountPath: /data/rooms
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3030
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3030
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: drafftink-relay-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drafftink-relay
+spec:
+  selector:
+    app: drafftink-relay
+  ports:
+    - port: 3030
+      targetPort: 3030
+  type: ClusterIP

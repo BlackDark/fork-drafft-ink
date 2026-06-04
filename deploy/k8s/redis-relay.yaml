@@ -1,0 +1,65 @@
+# Optional: enable when running relay with replicas > 1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drafftink-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: drafftink-redis
+  template:
+    metadata:
+      labels:
+        app: drafftink-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drafftink-redis
+spec:
+  selector:
+    app: drafftink-redis
+  ports:
+    - port: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drafftink-relay-redis
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: drafftink-relay-redis
+  template:
+    metadata:
+      labels:
+        app: drafftink-relay-redis
+    spec:
+      containers:
+        - name: relay
+          image: drafftink-server:latest
+          env:
+            - name: STORE
+              value: redis
+            - name: REDIS_URL
+              value: redis://drafftink-redis:6379
+            - name: PORT
+              value: "3030"
+          ports:
+            - containerPort: 3030
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3030
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3030
