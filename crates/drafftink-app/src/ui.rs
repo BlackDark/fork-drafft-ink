@@ -280,6 +280,12 @@ pub struct UiState {
     pub bg_color: Color32,
     /// Whether the collaboration modal is open.
     pub collab_modal_open: bool,
+    /// Deploy-time collaboration settings.
+    pub collab_config: crate::collab_config::CollabConfig,
+    /// Show display-name prompt before joining a room.
+    pub show_name_prompt: bool,
+    /// Room to join after name prompt is confirmed.
+    pub pending_join_room: Option<String>,
     /// Whether the keyboard shortcuts modal is open.
     pub shortcuts_modal_open: bool,
     /// Whether the save dialog is open.
@@ -328,8 +334,23 @@ impl Default for UiState {
             connection_state: ConnectionState::Disconnected,
             current_room: None,
             peer_count: 0,
-            server_url: "/ws".to_string(),
+            server_url: {
+                {
+                    let mut cfg = crate::collab_config::CollabConfig::from_build();
+                    #[cfg(target_arch = "wasm32")]
+                    cfg.apply_window_override();
+                    cfg.default_server_url.clone()
+                }
+            },
             room_input: String::new(),
+            collab_config: {
+                let mut cfg = crate::collab_config::CollabConfig::from_build();
+                #[cfg(target_arch = "wasm32")]
+                cfg.apply_window_override();
+                cfg
+            },
+            show_name_prompt: false,
+            pending_join_room: None,
             peers: Vec::new(),
             user_name: String::new(),
             user_color: "#6366f1".to_string(), // Indigo
@@ -472,6 +493,16 @@ pub enum UiAction {
     JoinRoom(String), // room ID
     /// Leave current collaboration room.
     LeaveRoom,
+    /// Create a new random room id and start sharing.
+    StartSharedRoom,
+    /// Copy the current invite link to the clipboard.
+    CopyInviteLink,
+    /// Generate a new random room id (without joining).
+    NewRoomId,
+    /// Confirm display name and join pending room.
+    ConfirmJoinName { room: String, name: String },
+    /// Cancel the name prompt.
+    CancelNamePrompt,
     /// Set user display name.
     SetUserName(String),
     /// Set user color (hex string).
@@ -1936,6 +1967,12 @@ fn render_file_menu(ctx: &Context, ui_state: &mut UiState) -> Option<UiAction> {
         }
     }
 
+    if ui_state.show_name_prompt {
+        if let Some(prompt_action) = render_name_prompt_modal(ctx, ui_state) {
+            action = Some(prompt_action);
+        }
+    }
+
     // Render shortcuts modal if open
     if ui_state.shortcuts_modal_open {
         render_shortcuts_modal(ctx, ui_state);
@@ -2203,20 +2240,43 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                         ui.separator();
                         ui.add_space(4.0);
 
-                        // Server URL
-                        ui.label(
-                            egui::RichText::new("Server URL")
-                                .size(12.0)
-                                .strong()
-                                .color(Color32::from_gray(60)),
-                        );
-                        input_text(
-                            ui,
-                            &mut ui_state.server_url,
-                            modal_width,
-                            "/ws",
-                        );
+                        if ui_state.collab_config.show_server_url_field() {
+                            ui.label(
+                                egui::RichText::new("Server URL")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(Color32::from_gray(60)),
+                            );
+                            if ui_state.collab_config.lock_server_url {
+                                ui.label(
+                                    egui::RichText::new(&ui_state.collab_config.default_server_url)
+                                        .size(13.0)
+                                        .color(Color32::from_gray(80)),
+                                );
+                                ui_state.server_url =
+                                    ui_state.collab_config.default_server_url.clone();
+                            } else {
+                                input_text(
+                                    ui,
+                                    &mut ui_state.server_url,
+                                    modal_width,
+                                    "/ws",
+                                );
+                            }
+                            ui.add_space(4.0);
+                        } else {
+                            ui_state.server_url =
+                                ui_state.collab_config.default_server_url.clone();
+                        }
 
+                        ui.horizontal(|ui| {
+                            if primary_btn(ui, "Start shared room") {
+                                action = Some(UiAction::StartSharedRoom);
+                            }
+                            if ui_state.current_room.is_some() && default_btn(ui, "Copy link") {
+                                action = Some(UiAction::CopyInviteLink);
+                            }
+                        });
                         ui.add_space(4.0);
 
                         // Connect/Disconnect button (styled)
@@ -2252,12 +2312,17 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                                     .strong()
                                     .color(Color32::from_gray(60)),
                             );
-                            input_text(
-                                ui,
-                                &mut ui_state.room_input,
-                                modal_width,
-                                "Enter room name",
-                            );
+                            ui.horizontal(|ui| {
+                                input_text(
+                                    ui,
+                                    &mut ui_state.room_input,
+                                    modal_width - 90.0,
+                                    "Enter room name",
+                                );
+                                if default_btn(ui, "New") {
+                                    action = Some(UiAction::NewRoomId);
+                                }
+                            });
 
                             ui.add_space(4.0);
 
@@ -2279,7 +2344,13 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                                 .min_size(Vec2::new(modal_width, 36.0))
                                 .corner_radius(CornerRadius::same(6));
                                 if ui.add(join_btn).clicked() {
-                                    action = Some(UiAction::JoinRoom(ui_state.room_input.clone()));
+                                    let room = ui_state.room_input.clone();
+                                    if ui_state.user_name.trim().is_empty() {
+                                        ui_state.pending_join_room = Some(room);
+                                        ui_state.show_name_prompt = true;
+                                    } else {
+                                        action = Some(UiAction::JoinRoom(room));
+                                    }
                                 }
                             }
 
@@ -2365,6 +2436,52 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                                     response.on_hover_text(name);
                                 }
                             });
+                        }
+                    });
+                });
+        });
+
+    action
+}
+
+/// Display-name prompt before joining a shared room.
+fn render_name_prompt_modal(ctx: &Context, ui_state: &mut UiState) -> Option<UiAction> {
+    let mut action = None;
+    let modal_width = 300.0;
+
+    egui::Area::new(egui::Id::new("name_prompt_modal"))
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .interactable(true)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(Color32::WHITE)
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(Margin::same(20))
+                .show(ui, |ui| {
+                    ui.set_width(modal_width);
+                    ui.label(
+                        egui::RichText::new("Join collaboration")
+                            .size(16.0)
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label("Enter your display name:");
+                    input_text(ui, &mut ui_state.user_name, modal_width, "Anonymous");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if default_btn(ui, "Cancel") {
+                            action = Some(UiAction::CancelNamePrompt);
+                        }
+                        if primary_btn(ui, "Join") {
+                            if let Some(room) = ui_state.pending_join_room.clone() {
+                                let name = if ui_state.user_name.trim().is_empty() {
+                                    "Anonymous".to_string()
+                                } else {
+                                    ui_state.user_name.clone()
+                                };
+                                action = Some(UiAction::ConfirmJoinName { room, name });
+                            }
                         }
                     });
                 });

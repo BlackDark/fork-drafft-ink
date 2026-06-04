@@ -9,6 +9,9 @@ description = "DrafftInk application shell for native and WASM"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[build-dependencies]
+# build.rs only
+
 [[bin]]
 name = "drafftink"
 path = "src/main.rs"
@@ -29,6 +32,7 @@ vello.workspace = true
 log.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 
 # UI
 egui.workspace = true
@@ -59,6 +63,8 @@ web-sys = { workspace = true, features = [
     "console",
     "Document",
     "Window",
+    "History",
+    "Storage",
     "Location",
     "Navigator",
     "Clipboard",

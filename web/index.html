@@ -66,6 +66,14 @@
     </div>
     
     <script>
+        // Optional runtime collab overrides (same-origin /ws by default):
+        // window.__DRAFFTINK_COLLAB__ = {
+        //   default_server_url: "/ws",
+        //   hide_server_url: true,
+        //   lock_server_url: true,
+        //   auto_connect: false
+        // };
+
         // Prevent browser from intercepting keyboard shortcuts we need
         document.addEventListener('keydown', function(e) {
             if ((e.ctrlKey || e.metaKey) && (

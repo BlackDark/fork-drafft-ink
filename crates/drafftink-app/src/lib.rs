@@ -4,7 +4,9 @@
 //! and integration of all components.
 
 mod app;
+mod collab_config;
 mod event_handler;
+mod share_url;
 mod shortcuts;
 mod ui;
 

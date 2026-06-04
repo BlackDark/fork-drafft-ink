@@ -62,9 +62,8 @@ done
 if [ "$BUILD_TYPE" = "wasm" ]; then
     print_status "Building WebAssembly package..."
     
-    # Check for wasm-pack
     if ! command -v wasm-pack &> /dev/null; then
-        print_error "wasm-pack not found. Install with: cargo install wasm-pack"
+        print_error "wasm-pack not found. Run: mise install  (see mise.toml)"
         exit 1
     fi
     

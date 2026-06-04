@@ -2,78 +2,39 @@
 
 use wasm_bindgen::prelude::*;
 
-/// URL parameters for auto-joining a room.
-pub struct UrlParams {
-    /// Room ID to join
-    pub room: Option<String>,
-    /// Server host:port (e.g., "localhost:3030")
-    pub server: Option<String>,
-}
+pub use crate::share_url::{UrlParams, parse_params};
 
-/// Parse URL query parameters for room and server.
-/// Supports formats like `?room=abc123&server=localhost:3030`
+/// Parse URL parameters from the current page location.
 pub fn get_url_params() -> UrlParams {
     let window = match web_sys::window() {
         Some(w) => w,
-        None => {
-            return UrlParams {
-                room: None,
-                server: None,
-            };
-        }
+        None => return UrlParams::default(),
     };
     let location = window.location();
 
-    let mut room = None;
-    let mut server = None;
+    let mut params = UrlParams::default();
 
-    // Try query string first (?room=abc123&server=host:port)
     if let Ok(search) = location.search() {
-        let params = parse_params(&search);
-        if room.is_none() {
-            room = params.0;
+        let p = parse_params(&search);
+        if params.room.is_none() {
+            params.room = p.room;
         }
-        if server.is_none() {
-            server = params.1;
+        if params.server.is_none() {
+            params.server = p.server;
         }
     }
 
-    // Try hash fragment (#room=abc123&server=host:port)
     if let Ok(hash) = location.hash() {
-        let params = parse_params(&hash);
-        if room.is_none() {
-            room = params.0;
+        let p = parse_params(&hash);
+        if params.room.is_none() {
+            params.room = p.room;
         }
-        if server.is_none() {
-            server = params.1;
-        }
-    }
-
-    UrlParams { room, server }
-}
-
-/// Parse room and server parameters from a query string or hash.
-fn parse_params(s: &str) -> (Option<String>, Option<String>) {
-    // Remove leading ? or #
-    let s = s.trim_start_matches(|c| c == '?' || c == '#');
-
-    let mut room = None;
-    let mut server = None;
-
-    for pair in s.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-            if !value.is_empty() {
-                match key {
-                    "room" => room = Some(value.to_string()),
-                    "server" => server = Some(value.to_string()),
-                    _ => {}
-                }
-            }
+        if params.server.is_none() {
+            params.server = p.server;
         }
     }
 
-    (room, server)
+    params
 }
 
 /// Legacy function for backward compatibility.
@@ -82,56 +43,71 @@ pub fn get_room_from_url() -> Option<String> {
 }
 
 /// Get the WebSocket server URL.
-/// If server is provided in URL params, use that. Otherwise use page origin.
-/// Converts http(s) to ws(s) and appends /ws path.
 pub fn get_server_url(server_param: Option<&str>) -> Option<String> {
-    // If server param provided, construct WebSocket URL from it
     if let Some(server) = server_param {
-        // Assume ws:// for explicit server params (user can specify wss:// if needed)
         let server = server.trim();
         if server.starts_with("ws://") || server.starts_with("wss://") {
-            // Already has protocol
             if server.ends_with("/ws") {
                 return Some(server.to_string());
-            } else {
-                return Some(format!("{}/ws", server.trim_end_matches('/')));
             }
-        } else {
-            // Add ws:// protocol
-            return Some(format!("ws://{}/ws", server.trim_end_matches('/')));
+            return Some(format!("{}/ws", server.trim_end_matches('/')));
         }
+        return Some(format!("ws://{}/ws", server.trim_end_matches('/')));
     }
 
-    // Fall back to page origin
     let window = web_sys::window()?;
     let location = window.location();
     let protocol = location.protocol().ok()?;
     let host = location.host().ok()?;
-
     let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
     Some(format!("{}//{}/ws", ws_protocol, host))
+}
+
+/// Update the browser URL with room (and optionally server) for sharing.
+pub fn set_share_url(room: &str, server: Option<&str>, include_server: bool) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(history) = window.history() else {
+        return;
+    };
+    let query = crate::share_url::build_share_query(room, server, include_server);
+    let path = window
+        .location()
+        .pathname()
+        .unwrap_or_else(|_| "/".to_string());
+    let new_url = format!("{path}{query}");
+    let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&new_url));
+}
+
+const DISPLAY_NAME_KEY: &str = "drafftink_display_name";
+
+pub fn load_display_name() -> Option<String> {
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    storage.get_item(DISPLAY_NAME_KEY).ok()?
+}
+
+pub fn save_display_name(name: &str) {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.set_item(DISPLAY_NAME_KEY, name);
+        }
+    }
 }
 
 /// Initialize and run the WASM application.
 #[wasm_bindgen(start)]
 pub async fn run_wasm() {
-    // Set up panic hook for better error messages
     console_error_panic_hook::set_once();
-
-    // Initialize logging
     console_log::init_with_level(log::Level::Info).expect("Failed to initialize logger");
 
     log::info!("Starting DrafftInk (WASM)");
 
-    // Log URL params if present
     let params = get_url_params();
     if let Some(ref room) = params.room {
         log::info!("Room from URL: {}", room);
     }
-    if let Some(ref server) = params.server {
-        log::info!("Server from URL: {}", server);
-    }
 
-    // Run the app
     crate::App::run().await;
 }

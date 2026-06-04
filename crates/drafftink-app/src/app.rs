@@ -1492,6 +1492,12 @@ struct AppState {
 /// invoke it inside closures that already hold disjoint borrows of other
 /// fields on `AppState` (e.g. inside the egui closure that borrows
 /// `state.egui_ctx`). Pass the fields directly to keep borrows fine-grained.
+fn collab_after_local_edit(collab: &mut CollaborationManager) {
+    if collab.is_in_room() {
+        collab.mark_sync_dirty();
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn broadcast_doc_changes(
     collab: &mut CollaborationManager,
@@ -1502,7 +1508,8 @@ fn broadcast_doc_changes(
         return;
     }
     collab.sync_to_crdt(document);
-    collab.broadcast_sync();
+    collab.mark_sync_dirty();
+    collab.flush_sync(false);
     if let Some(ws) = websocket {
         for msg in collab.take_outgoing() {
             let _ = ws.send(&msg);
@@ -1520,7 +1527,8 @@ fn broadcast_doc_changes(
         return;
     }
     collab.sync_to_crdt(document);
-    collab.broadcast_sync();
+    collab.mark_sync_dirty();
+    collab.flush_sync(false);
     if let Some(ws) = websocket {
         for msg in collab.take_outgoing() {
             let _ = ws.send(&msg);
@@ -1707,11 +1715,15 @@ impl App {
 
         log::info!("Auto-joining room '{}' via {}", room, server_url);
 
-        // Update UI state
         state.ui_state.server_url = server_url.clone();
         state.ui_state.room_input = room.clone();
 
-        // Connect to WebSocket
+        if let Some(name) = crate::web::load_display_name() {
+            if !name.trim().is_empty() {
+                state.ui_state.user_name = name;
+            }
+        }
+
         let mut ws = drafftink_core::sync::WasmWebSocket::new();
         match ws.connect(&server_url) {
             Ok(()) => {
@@ -1719,8 +1731,12 @@ impl App {
                 state.websocket = Some(ws);
                 state.ui_state.connection_state = ConnectionState::Connecting;
 
-                // Queue the join request (will be sent once connected)
-                state.collab.join_room(&room);
+                if state.ui_state.user_name.trim().is_empty() {
+                    state.ui_state.pending_join_room = Some(room);
+                    state.ui_state.show_name_prompt = true;
+                } else {
+                    state.collab.join_room(&room);
+                }
             }
             Err(e) => {
                 log::error!("WebSocket connect failed: {}", e);
@@ -2007,6 +2023,7 @@ impl ApplicationHandler for App {
                     state.canvas.add_to_selection(new_id);
                     if state.collab.is_in_room() {
                         let _ = state.collab.crdt_mut().add_shape(&image_shape);
+                        collab_after_local_edit(&mut state.collab);
                     }
                     state.needs_redraw = true;
                 }
@@ -2040,6 +2057,7 @@ impl ApplicationHandler for App {
                         state.canvas.add_to_selection(new_id);
                         if state.collab.is_in_room() {
                             let _ = state.collab.crdt_mut().add_shape(&shape);
+                            collab_after_local_edit(&mut state.collab);
                         }
                     }
                     log::info!("Pasted shapes from Excalidraw clipboard");
@@ -2056,6 +2074,7 @@ impl ApplicationHandler for App {
                     state.canvas.add_to_selection(new_id);
                     if state.collab.is_in_room() {
                         let _ = state.collab.crdt_mut().add_shape(&image_shape);
+                        collab_after_local_edit(&mut state.collab);
                     }
                     state.needs_redraw = true;
                 }
@@ -2123,7 +2142,19 @@ impl ApplicationHandler for App {
                         match event {
                             SyncEvent::Connected => {
                                 log::info!("WebSocket connected");
+                                state.ui_state.connection_state = ConnectionState::Connected;
                                 state.collab.enable();
+                                if !state.ui_state.show_name_prompt {
+                                    if let Some(room) =
+                                        state.ui_state.pending_join_room.clone()
+                                    {
+                                        state.collab.join_room(&room);
+                                        for msg in state.collab.take_outgoing() {
+                                            let _ = ws.send(&msg);
+                                        }
+                                        state.ui_state.pending_join_room = None;
+                                    }
+                                }
                             }
                             SyncEvent::Disconnected => {
                                 log::info!("WebSocket disconnected");
@@ -2153,9 +2184,9 @@ impl ApplicationHandler for App {
                                     }
                                 }
 
-                                // Broadcast our current state
+                                // Broadcast our current state (full snapshot after join)
                                 state.collab.sync_to_crdt(&state.canvas.document);
-                                state.collab.broadcast_sync();
+                                state.collab.broadcast_sync_snapshot();
                                 for msg in state.collab.take_outgoing() {
                                     let _ = ws.send(&msg);
                                 }
@@ -2190,10 +2221,22 @@ impl ApplicationHandler for App {
                                     },
                                 );
                             }
+                            SyncEvent::RoomSnapshot { data } => {
+                                if let Some(data) = data {
+                                    if state.collab.import_updates(&data) {
+                                        state.collab.sync_from_crdt(&mut state.canvas.document);
+                                        state.needs_redraw = true;
+                                    }
+                                }
+                            }
                             SyncEvent::Error { message } => {
                                 log::error!("Sync error: {}", message);
                             }
                         }
+                    }
+
+                    if state.collab.is_in_room() {
+                        state.collab.flush_sync(false);
                     }
 
                     // Send any pending outgoing messages
@@ -2826,6 +2869,10 @@ impl ApplicationHandler for App {
                             }
                             // Collaboration actions
                             UiAction::Connect(url) => {
+                                let url = state
+                                    .ui_state
+                                    .collab_config
+                                    .effective_server_url(&url);
                                 log::info!("Connect requested to: {}", url);
                                 #[cfg(target_arch = "wasm32")]
                                 let mut ws = drafftink_core::sync::WasmWebSocket::new();
@@ -2880,6 +2927,135 @@ impl ApplicationHandler for App {
                                 state.remote_peers.clear();
                                 state.ui_state.current_room = None;
                             }
+                            UiAction::StartSharedRoom => {
+                                let room = uuid::Uuid::new_v4().to_string();
+                                state.ui_state.room_input = room.clone();
+                                state.ui_state.collab_modal_open = true;
+                                let url = state
+                                    .ui_state
+                                    .collab_config
+                                    .effective_server_url(&state.ui_state.server_url);
+                                if state.ui_state.connection_state
+                                    == ConnectionState::Disconnected
+                                    || state.ui_state.connection_state == ConnectionState::Error
+                                {
+                                    #[cfg(target_arch = "wasm32")]
+                                    let mut ws = drafftink_core::sync::WasmWebSocket::new();
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let mut ws = drafftink_core::sync::NativeWebSocket::new();
+                                    if ws.connect(&url).is_ok() {
+                                        state.websocket = Some(ws);
+                                        state.ui_state.connection_state =
+                                            ConnectionState::Connecting;
+                                    }
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    let include_server = state
+                                        .ui_state
+                                        .collab_config
+                                        .show_server_url_field();
+                                    crate::web::set_share_url(
+                                        &room,
+                                        Some(&url),
+                                        include_server,
+                                    );
+                                }
+                                if state.ui_state.user_name.trim().is_empty() {
+                                    state.ui_state.pending_join_room = Some(room);
+                                    state.ui_state.show_name_prompt = true;
+                                } else if state.ui_state.connection_state
+                                    == ConnectionState::Connected
+                                {
+                                    state.collab.join_room(&room);
+                                    if let Some(ref ws) = state.websocket {
+                                        for msg in state.collab.take_outgoing() {
+                                            let _ = ws.send(&msg);
+                                        }
+                                    }
+                                } else {
+                                    state.ui_state.pending_join_room = Some(room);
+                                }
+                            }
+                            UiAction::CopyInviteLink => {
+                                let room = state
+                                    .ui_state
+                                    .current_room
+                                    .clone()
+                                    .or_else(|| {
+                                        if state.ui_state.room_input.is_empty() {
+                                            None
+                                        } else {
+                                            Some(state.ui_state.room_input.clone())
+                                        }
+                                    });
+                                if let Some(room) = room {
+                                    #[cfg(target_arch = "wasm32")]
+                                    {
+                                        if let Some(window) = web_sys::window() {
+                                            let origin = window.location().origin().unwrap_or_default();
+                                            let path = window.location().pathname().unwrap_or_else(|_| "/".to_string());
+                                            let include_server = state
+                                                .ui_state
+                                                .collab_config
+                                                .show_server_url_field();
+                                            let server = if include_server {
+                                                Some(state.ui_state.server_url.as_str())
+                                            } else {
+                                                None
+                                            };
+                                            let query = crate::share_url::build_share_query(
+                                                &room,
+                                                server,
+                                                include_server,
+                                            );
+                                            let link = format!("{origin}{path}{query}");
+                                            file_ops::copy_text_to_clipboard(&link);
+                                        }
+                                    }
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    log::info!(
+                                        "Share link: room {} (copy not implemented on native)",
+                                        room
+                                    );
+                                }
+                            }
+                            UiAction::NewRoomId => {
+                                state.ui_state.room_input = uuid::Uuid::new_v4().to_string();
+                            }
+                            UiAction::ConfirmJoinName { room, name } => {
+                                state.ui_state.user_name = name.clone();
+                                state.ui_state.show_name_prompt = false;
+                                state.ui_state.pending_join_room = None;
+                                #[cfg(target_arch = "wasm32")]
+                                crate::web::save_display_name(&name);
+                                state.collab.set_user_info(
+                                    name,
+                                    state.ui_state.user_color.clone(),
+                                );
+                                state.collab.join_room(&room);
+                                if let Some(ref ws) = state.websocket {
+                                    for msg in state.collab.take_outgoing() {
+                                        let _ = ws.send(&msg);
+                                    }
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    let include_server = state
+                                        .ui_state
+                                        .collab_config
+                                        .show_server_url_field();
+                                    crate::web::set_share_url(
+                                        &room,
+                                        Some(&state.ui_state.server_url),
+                                        include_server,
+                                    );
+                                }
+                            }
+                            UiAction::CancelNamePrompt => {
+                                state.ui_state.show_name_prompt = false;
+                                state.ui_state.pending_join_room = None;
+                            }
                             UiAction::SetUserName(name) => {
                                 log::info!("Set user name: {}", name);
                                 let color = state.ui_state.user_color.clone();
@@ -2921,6 +3097,7 @@ impl ApplicationHandler for App {
                                                 .bring_to_front(&id.to_string());
                                         }
                                     }
+                                    collab_after_local_edit(&mut state.collab);
                                 }
                             }
                             UiAction::SendToBack => {
@@ -2937,6 +3114,7 @@ impl ApplicationHandler for App {
                                                 .send_to_back(&id.to_string());
                                         }
                                     }
+                                    collab_after_local_edit(&mut state.collab);
                                 }
                             }
                             UiAction::BringForward => {
@@ -2964,6 +3142,7 @@ impl ApplicationHandler for App {
                                                 .bring_forward(&id.to_string());
                                         }
                                     }
+                                    collab_after_local_edit(&mut state.collab);
                                 }
                             }
                             UiAction::SendBackward => {
@@ -2991,6 +3170,7 @@ impl ApplicationHandler for App {
                                                 .send_backward(&id.to_string());
                                         }
                                     }
+                                    collab_after_local_edit(&mut state.collab);
                                 }
                             }
                             UiAction::ZoomToFit => {
@@ -3039,6 +3219,7 @@ impl ApplicationHandler for App {
                                             if state.collab.is_in_room() {
                                                 let _ =
                                                     state.collab.crdt_mut().add_shape(&new_shape);
+                                                collab_after_local_edit(&mut state.collab);
                                             }
                                         }
                                     }
@@ -3089,6 +3270,7 @@ impl ApplicationHandler for App {
                                                     .remove_shape(&id.to_string());
                                             }
                                         }
+                                        collab_after_local_edit(&mut state.collab);
                                         state.canvas.clear_selection();
                                     }
                                 }
@@ -3112,6 +3294,7 @@ impl ApplicationHandler for App {
                                             if state.collab.is_in_room() {
                                                 let _ =
                                                     state.collab.crdt_mut().add_shape(&new_shape);
+                                                collab_after_local_edit(&mut state.collab);
                                             }
                                         }
                                         log::info!("Pasted shapes from clipboard");
@@ -4752,6 +4935,7 @@ impl ApplicationHandler for App {
                                                         .remove_shape(&id.to_string());
                                                 }
                                             }
+                                            collab_after_local_edit(&mut state.collab);
                                             state.canvas.clear_selection();
                                         }
                                     }
@@ -4781,6 +4965,7 @@ impl ApplicationHandler for App {
                                                         .add_shape(&new_shape);
                                                 }
                                             }
+                                            collab_after_local_edit(&mut state.collab);
                                             log::info!("Pasted shapes");
                                             pasted = true;
                                         }
@@ -4816,6 +5001,7 @@ impl ApplicationHandler for App {
                                                         state.canvas.add_to_selection(new_id);
                                                         if state.collab.is_in_room() {
                                                             let _ = state.collab.crdt_mut().add_shape(&shape);
+                                                            collab_after_local_edit(&mut state.collab);
                                                         }
                                                     }
                                                     log::info!("Pasted shapes from Excalidraw clipboard");
@@ -4839,6 +5025,7 @@ impl ApplicationHandler for App {
                                             if state.collab.is_in_room() {
                                                 let _ =
                                                     state.collab.crdt_mut().add_shape(&image_shape);
+                                                collab_after_local_edit(&mut state.collab);
                                             }
                                             log::info!("Pasted image from clipboard");
                                         }
@@ -4886,6 +5073,7 @@ impl ApplicationHandler for App {
                                                 }
                                             }
                                         }
+                                        collab_after_local_edit(&mut state.collab);
                                         state.canvas.clear_selection();
                                         for id in new_selection {
                                             state.canvas.add_to_selection(id);
@@ -5100,6 +5288,7 @@ impl ApplicationHandler for App {
                                 state.canvas.add_to_selection(new_id);
                                 if state.collab.is_in_room() {
                                     let _ = state.collab.crdt_mut().add_shape(&shape);
+                                    collab_after_local_edit(&mut state.collab);
                                 }
 
                                 log::info!(
