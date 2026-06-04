@@ -178,7 +178,12 @@ impl InputState {
     }
 
     pub fn ctrl(&self) -> bool {
-        self.helper.held_control()
+        self.helper.held_control() || self.command_key()
+    }
+
+    /// Command (macOS) / Super (Windows/Linux) — treated like Ctrl for shortcuts.
+    pub fn command_key(&self) -> bool {
+        self.helper.key_held(KeyCode::SuperLeft) || self.helper.key_held(KeyCode::SuperRight)
     }
 
     pub fn alt(&self) -> bool {

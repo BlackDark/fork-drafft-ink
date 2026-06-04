@@ -40,13 +40,9 @@ pub struct TextModifiers {
 }
 
 impl TextModifiers {
-    /// Get the action modifier (Ctrl on Windows/Linux, Cmd on macOS).
+    /// Get the action modifier (Ctrl on Windows/Linux, Cmd on macOS / in browser).
     pub fn action_mod(&self) -> bool {
-        if cfg!(target_os = "macos") {
-            self.meta
-        } else {
-            self.ctrl
-        }
+        self.ctrl || self.meta
     }
 }
 

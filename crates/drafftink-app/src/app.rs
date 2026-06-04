@@ -131,6 +131,15 @@ pub mod file_ops {
         });
     }
 
+    /// Copy text to the system clipboard.
+    pub fn copy_text_to_clipboard(text: &str) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Err(e) = clipboard.set_text(text) {
+                log::error!("Failed to copy text to clipboard: {}", e);
+            }
+        }
+    }
+
     /// Copy PNG to clipboard.
     pub fn copy_png_to_clipboard(png_data: &[u8], width: u32, height: u32) {
         // arboard expects RGBA pixel data, not PNG encoded data
@@ -821,6 +830,15 @@ pub mod file_ops {
     pub fn paste_shapes_from_clipboard_async(cursor_world: kurbo::Point) {
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(text) = read_clipboard_text_async().await {
+                use drafftink_core::shapes::Shape;
+                if let Ok(shapes) = serde_json::from_str::<Vec<Shape>>(&text) {
+                    if !shapes.is_empty() {
+                        PENDING_EXCALIDRAW_SHAPES.with(|cell| {
+                            *cell.borrow_mut() = Some((shapes, cursor_world));
+                        });
+                        return;
+                    }
+                }
                 if let Some(shapes) =
                     drafftink_core::canvas::CanvasDocument::shapes_from_excalidraw_clipboard(&text)
                 {
@@ -1709,9 +1727,14 @@ impl App {
             None => return,
         };
 
-        // Get server URL from params or origin
-        let server_url = get_server_url(params.server.as_deref())
-            .unwrap_or_else(|| state.ui_state.server_url.clone());
+        let cfg = &state.ui_state.collab_config;
+        let server_url = if cfg.hide_server_url || cfg.lock_server_url {
+            cfg.effective_server_url("")
+        } else {
+            get_server_url(params.server.as_deref()).unwrap_or_else(|| {
+                get_server_url(None).unwrap_or_else(|| state.ui_state.server_url.clone())
+            })
+        };
 
         log::info!("Auto-joining room '{}' via {}", room, server_url);
 
@@ -1732,10 +1755,14 @@ impl App {
                 state.ui_state.connection_state = ConnectionState::Connecting;
 
                 if state.ui_state.user_name.trim().is_empty() {
-                    state.ui_state.pending_join_room = Some(room);
+                    state.ui_state.pending_join_room = Some(room.clone());
                     state.ui_state.show_name_prompt = true;
+                    state.ui_state.collab_modal_open = false;
                 } else {
                     state.collab.join_room(&room);
+                }
+                if cfg.hide_server_url || !cfg.show_server_url_field() {
+                    crate::web::set_share_url(&room, None, false);
                 }
             }
             Err(e) => {
@@ -2930,7 +2957,7 @@ impl ApplicationHandler for App {
                             UiAction::StartSharedRoom => {
                                 let room = uuid::Uuid::new_v4().to_string();
                                 state.ui_state.room_input = room.clone();
-                                state.ui_state.collab_modal_open = true;
+                                state.ui_state.collab_modal_open = false;
                                 let url = state
                                     .ui_state
                                     .collab_config
@@ -2955,15 +2982,18 @@ impl ApplicationHandler for App {
                                         .ui_state
                                         .collab_config
                                         .show_server_url_field();
+                                    let server_q =
+                                        crate::share_url::ws_url_to_share_server(&url);
                                     crate::web::set_share_url(
                                         &room,
-                                        Some(&url),
+                                        server_q.as_deref(),
                                         include_server,
                                     );
                                 }
                                 if state.ui_state.user_name.trim().is_empty() {
                                     state.ui_state.pending_join_room = Some(room);
                                     state.ui_state.show_name_prompt = true;
+                                    state.ui_state.collab_modal_open = false;
                                 } else if state.ui_state.connection_state
                                     == ConnectionState::Connected
                                 {
@@ -2999,14 +3029,16 @@ impl ApplicationHandler for App {
                                                 .ui_state
                                                 .collab_config
                                                 .show_server_url_field();
-                                            let server = if include_server {
-                                                Some(state.ui_state.server_url.as_str())
+                                            let server_q = if include_server {
+                                                crate::share_url::ws_url_to_share_server(
+                                                    &state.ui_state.server_url,
+                                                )
                                             } else {
                                                 None
                                             };
                                             let query = crate::share_url::build_share_query(
                                                 &room,
-                                                server,
+                                                server_q.as_deref(),
                                                 include_server,
                                             );
                                             let link = format!("{origin}{path}{query}");
@@ -3045,9 +3077,12 @@ impl ApplicationHandler for App {
                                         .ui_state
                                         .collab_config
                                         .show_server_url_field();
+                                    let server_q = crate::share_url::ws_url_to_share_server(
+                                        &state.ui_state.server_url,
+                                    );
                                     crate::web::set_share_url(
                                         &room,
-                                        Some(&state.ui_state.server_url),
+                                        server_q.as_deref(),
                                         include_server,
                                     );
                                 }
@@ -3241,7 +3276,8 @@ impl ApplicationHandler for App {
                                         })
                                         .collect();
                                     if let Ok(json) = serde_json::to_string(&shapes) {
-                                        state.ui_state.clipboard_shapes = Some(json);
+                                        state.ui_state.clipboard_shapes = Some(json.clone());
+                                        file_ops::copy_text_to_clipboard(&json);
                                         log::info!("Copied {} shapes to clipboard", shapes.len());
                                     }
                                 }
@@ -3257,7 +3293,8 @@ impl ApplicationHandler for App {
                                         })
                                         .collect();
                                     if let Ok(json) = serde_json::to_string(&shapes) {
-                                        state.ui_state.clipboard_shapes = Some(json);
+                                        state.ui_state.clipboard_shapes = Some(json.clone());
+                                        file_ops::copy_text_to_clipboard(&json);
                                         log::info!("Cut {} shapes to clipboard", shapes.len());
                                         // Delete the shapes
                                         state.canvas.document.push_undo();
@@ -4453,7 +4490,7 @@ impl ApplicationHandler for App {
                                 shift: state.input.shift(),
                                 ctrl: state.input.ctrl(),
                                 alt: state.input.alt(),
-                                meta: false, // winit_input_helper doesn't track meta separately
+                                meta: state.input.command_key(),
                             };
 
                             let (font_cx, layout_cx) = state.shape_renderer.contexts_mut();
@@ -4906,7 +4943,8 @@ impl ApplicationHandler for App {
                                             })
                                             .collect();
                                         if let Ok(json) = serde_json::to_string(&shapes) {
-                                            state.ui_state.clipboard_shapes = Some(json);
+                                            state.ui_state.clipboard_shapes = Some(json.clone());
+                                            file_ops::copy_text_to_clipboard(&json);
                                             log::info!("Copied {} shapes", shapes.len());
                                         }
                                     }
@@ -4923,7 +4961,8 @@ impl ApplicationHandler for App {
                                             })
                                             .collect();
                                         if let Ok(json) = serde_json::to_string(&shapes) {
-                                            state.ui_state.clipboard_shapes = Some(json);
+                                            state.ui_state.clipboard_shapes = Some(json.clone());
+                                            file_ops::copy_text_to_clipboard(&json);
                                             log::info!("Cut {} shapes", shapes.len());
                                             state.canvas.document.push_undo();
                                             for &id in &state.canvas.selection.clone() {

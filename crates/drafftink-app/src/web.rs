@@ -46,13 +46,16 @@ pub fn get_room_from_url() -> Option<String> {
 pub fn get_server_url(server_param: Option<&str>) -> Option<String> {
     if let Some(server) = server_param {
         let server = server.trim();
-        if server.starts_with("ws://") || server.starts_with("wss://") {
+        if !crate::share_url::is_valid_server_query_param(server) {
+            // Ignore broken ?server= values (e.g. truncated `ws` from unencoded ws://…)
+        } else if server.starts_with("ws://") || server.starts_with("wss://") {
             if server.ends_with("/ws") {
                 return Some(server.to_string());
             }
             return Some(format!("{}/ws", server.trim_end_matches('/')));
+        } else {
+            return Some(format!("ws://{}/ws", server.trim_end_matches('/')));
         }
-        return Some(format!("ws://{}/ws", server.trim_end_matches('/')));
     }
 
     let window = web_sys::window()?;

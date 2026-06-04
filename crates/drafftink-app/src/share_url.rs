@@ -54,12 +54,50 @@ fn percent_decode(s: &str) -> String {
     out
 }
 
+/// Whether `?server=` is usable (filters broken values like `ws` from unencoded URLs).
+pub fn is_valid_server_query_param(param: &str) -> bool {
+    let p = param.trim();
+    if p.is_empty() || p == "ws" || p == "/ws" {
+        return false;
+    }
+    if p.contains("://") {
+        return false;
+    }
+    p.len() >= 2
+}
+
+/// Host[:port] for `?server=` from a WebSocket URL (relative `/ws` → same-origin, omit param).
+pub fn ws_url_to_share_server(ws_url: &str) -> Option<String> {
+    let ws_url = ws_url.trim();
+    if ws_url.is_empty() || ws_url == "/ws" || ws_url.starts_with('/') {
+        return None;
+    }
+    let host = ws_url
+        .strip_prefix("wss://")
+        .or_else(|| ws_url.strip_prefix("ws://"))
+        .unwrap_or(ws_url);
+    let host = host.trim_end_matches('/').trim_end_matches("ws").trim_end_matches('/');
+    if host.is_empty() || host == "ws" {
+        return None;
+    }
+    Some(host.to_string())
+}
+
 /// Build a share path+query string for the current page.
 pub fn build_share_query(room: &str, server: Option<&str>, include_server: bool) -> String {
     let room = url_encode(room);
     if include_server {
-        if let Some(server) = server.filter(|s| !s.is_empty()) {
-            return format!("?room={room}&server={}", url_encode(server));
+        if let Some(server) = server
+            .filter(|s| !s.is_empty())
+            .and_then(|s| ws_url_to_share_server(s).or_else(|| {
+                if is_valid_server_query_param(s) {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }))
+        {
+            return format!("?room={room}&server={}", url_encode(&server));
         }
     }
     format!("?room={room}")
@@ -109,5 +147,18 @@ mod tests {
             build_share_query("r", Some("relay.example:3030"), true),
             "?room=r&server=relay.example%3A3030"
         );
+    }
+
+    #[test]
+    fn build_share_from_ws_url_uses_host_only() {
+        assert_eq!(
+            build_share_query("r", Some("ws://localhost:8080/ws"), true),
+            "?room=r&server=localhost%3A8080"
+        );
+    }
+
+    #[test]
+    fn rejects_broken_server_param() {
+        assert!(!is_valid_server_query_param("ws"));
     }
 }

@@ -352,7 +352,7 @@ impl Default for UiState {
             show_name_prompt: false,
             pending_join_room: None,
             peers: Vec::new(),
-            user_name: String::new(),
+            user_name: "Anonymous".to_string(),
             user_color: "#6366f1".to_string(), // Indigo
             bg_color: Color32::WHITE,
             collab_modal_open: false,
@@ -2273,7 +2273,7 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                             if primary_btn(ui, "Start shared room") {
                                 action = Some(UiAction::StartSharedRoom);
                             }
-                            if ui_state.current_room.is_some() && default_btn(ui, "Copy link") {
+                            if ui_state.current_room.is_some() && secondary_btn(ui, "Copy link") {
                                 action = Some(UiAction::CopyInviteLink);
                             }
                         });
@@ -2319,7 +2319,7 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                                     modal_width - 90.0,
                                     "Enter room name",
                                 );
-                                if default_btn(ui, "New") {
+                                if secondary_btn(ui, "New") {
                                     action = Some(UiAction::NewRoomId);
                                 }
                             });
@@ -2348,6 +2348,7 @@ fn render_collaboration_modal(ctx: &Context, ui_state: &mut UiState) -> Option<U
                                     if ui_state.user_name.trim().is_empty() {
                                         ui_state.pending_join_room = Some(room);
                                         ui_state.show_name_prompt = true;
+                                        ui_state.collab_modal_open = false;
                                     } else {
                                         action = Some(UiAction::JoinRoom(room));
                                     }
@@ -2457,7 +2458,14 @@ fn render_name_prompt_modal(ctx: &Context, ui_state: &mut UiState) -> Option<UiA
             Frame::new()
                 .fill(Color32::WHITE)
                 .corner_radius(CornerRadius::same(12))
-                .inner_margin(Margin::same(20))
+                .stroke(Stroke::new(1.0, Color32::from_gray(200)))
+                .shadow(egui::epaint::Shadow {
+                    spread: 2,
+                    blur: 20,
+                    offset: [0, 4],
+                    color: Color32::from_black_alpha(40),
+                })
+                .inner_margin(Margin::same(24))
                 .show(ui, |ui| {
                     ui.set_width(modal_width);
                     ui.label(

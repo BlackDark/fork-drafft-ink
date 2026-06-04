@@ -77,6 +77,13 @@
         // Prevent browser from intercepting keyboard shortcuts we need
         document.addEventListener('keydown', function(e) {
             if ((e.ctrlKey || e.metaKey) && (
+                e.key === 'a' || e.key === 'A' ||
+                e.key === 'c' || e.key === 'C' ||
+                e.key === 'v' || e.key === 'V' ||
+                e.key === 'x' || e.key === 'X' ||
+                e.key === 'z' || e.key === 'Z' ||
+                e.key === 'y' || e.key === 'Y' ||
+                e.key === 'd' || e.key === 'D' ||
                 e.key === 'e' || e.key === 'E' ||
                 e.key === 's' || e.key === 'S' ||
                 e.key === 'g' || e.key === 'G'
